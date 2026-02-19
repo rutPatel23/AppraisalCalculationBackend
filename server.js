@@ -550,23 +550,21 @@ app.post("/api/add_user", async (req, res) => {
     if ((!username && !email) || !password) return res.status(400).json({ error: "Username/email and password required" });
     const { tableFq, identityCol, passwordCol, roleCol, emailCol } = await getHrLoginMeta();
     if (!tableFq || !identityCol || !passwordCol) return res.status(500).json({ error: "hrlogin table missing expected columns" });
-    // Always provide both username and email if both columns exist
-    let identity = username ?? email;
-    let emailVal = email ?? username;
-    // If identityCol and emailCol are the same, just use one value
+    // Always provide both username and email columns if both exist and are NOT NULL
     const stripName = s => String(s || "").replace(/"/g, "").toLowerCase();
     const sameCol = emailCol && stripName(identityCol) === stripName(emailCol);
-    const existsSql = `SELECT 1 FROM ${tableFq} WHERE lower(${identityCol}) = lower($1)`;
-    const exists = await query(existsSql, [identity]);
-    if (exists.rows.length) return res.status(409).json({ error: "User already exists" });
+    // If both username and email columns exist and are different, always insert both
     let cols = [identityCol, passwordCol];
-    let vals = [identity, password];
-    if (emailCol) {
-      if (!sameCol) {
-        cols.push(emailCol);
-        vals.push(emailVal);
-      }
+    let vals = [username ?? email, password];
+    if (emailCol && !sameCol) {
+      // Always push email, fallback to username if email missing
+      cols.push(emailCol);
+      vals.push(email ?? username);
     }
+    // Check for existing user by username (identityCol)
+    const existsSql = `SELECT 1 FROM ${tableFq} WHERE lower(${identityCol}) = lower($1)`;
+    const exists = await query(existsSql, [username ?? email]);
+    if (exists.rows.length) return res.status(409).json({ error: "User already exists" });
     const placeholders = vals.map((_, i) => `$${i + 1}`).join(", ");
     const insSql = `INSERT INTO ${tableFq} (${cols.join(", ")}) VALUES (${placeholders})`;
     await query(insSql, vals);
