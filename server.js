@@ -270,19 +270,23 @@ async function getHrLoginMeta() {
   const pwCandidates = ["password","passwd","pass","pwd"];
   const roleCandidates = ["role","roles","userrole","is_admin"];
   const permCandidates = ["permissions","permisions","perms","perm"];
+  const emailCandidates = ["email","mail"];
   const identityIdx = idCandidates.map(c => colsLower.indexOf(c)).find(i => i >= 0);
   const passwordIdx = pwCandidates.map(c => colsLower.indexOf(c)).find(i => i >= 0);
   const roleIdx = roleCandidates.map(c => colsLower.indexOf(c)).find(i => i >= 0);
   const permIdx = permCandidates.map(c => colsLower.indexOf(c)).find(i => i >= 0);
+  const emailIdx = emailCandidates.map(c => colsLower.indexOf(c)).find(i => i >= 0);
   const identityCol = identityIdx >= 0 ? rawCols[identityIdx] : null;
   const passwordCol = passwordIdx >= 0 ? rawCols[passwordIdx] : null;
   const roleCol = roleIdx >= 0 ? rawCols[roleIdx] : null;
   const permCol = permIdx >= 0 ? rawCols[permIdx] : null;
+  const emailCol = emailIdx >= 0 ? rawCols[emailIdx] : null;
   const idQuoted = identityCol ? `"${identityCol}"` : null;
   const pwQuoted = passwordCol ? `"${passwordCol}"` : null;
   const roleQuoted = roleCol ? `"${roleCol}"` : null;
   const permQuoted = permCol ? `"${permCol}"` : null;
-  return { tableFq: fq, identityCol: idQuoted, passwordCol: pwQuoted, roleCol: roleQuoted, permCol: permQuoted };
+  const emailQuoted = emailCol ? `"${emailCol}"` : null;
+  return { tableFq: fq, identityCol: idQuoted, passwordCol: pwQuoted, roleCol: roleQuoted, permCol: permQuoted, emailCol: emailQuoted };
 }
 
 async function ensureRolesTable() {
@@ -539,18 +543,33 @@ app.post("/api/change_password", async (req, res) => {
 
 app.post("/api/add_user", async (req, res) => {
   try {
-    const { actor, username, password, role } = req.body || {};
+    const { actor, username, email, password, role } = req.body || {};
     if (!actor) return res.status(401).json({ error: "Actor required" });
     const actorRole = await getUserRole(actor);
     if (actorRole !== "admin") return res.status(403).json({ error: "Not authorized" });
-    if (!username || !password) return res.status(400).json({ error: "Username and password required" });
-    const { tableFq, identityCol, passwordCol, roleCol } = await getHrLoginMeta();
+    if ((!username && !email) || !password) return res.status(400).json({ error: "Username/email and password required" });
+    const { tableFq, identityCol, passwordCol, roleCol, emailCol } = await getHrLoginMeta();
     if (!tableFq || !identityCol || !passwordCol) return res.status(500).json({ error: "hrlogin table missing expected columns" });
+    // Always provide both username and email if both columns exist
+    let identity = username ?? email;
+    let emailVal = email ?? username;
+    // If identityCol and emailCol are the same, just use one value
+    const stripName = s => String(s || "").replace(/"/g, "").toLowerCase();
+    const sameCol = emailCol && stripName(identityCol) === stripName(emailCol);
     const existsSql = `SELECT 1 FROM ${tableFq} WHERE lower(${identityCol}) = lower($1)`;
-    const exists = await query(existsSql, [username]);
+    const exists = await query(existsSql, [identity]);
     if (exists.rows.length) return res.status(409).json({ error: "User already exists" });
-    const insSql = `INSERT INTO ${tableFq} (${identityCol}, ${passwordCol}) VALUES ($1, $2)`;
-    await query(insSql, [username, password]);
+    let cols = [identityCol, passwordCol];
+    let vals = [identity, password];
+    if (emailCol) {
+      if (!sameCol) {
+        cols.push(emailCol);
+        vals.push(emailVal);
+      }
+    }
+    const placeholders = vals.map((_, i) => `$${i + 1}`).join(", ");
+    const insSql = `INSERT INTO ${tableFq} (${cols.join(", ")}) VALUES (${placeholders})`;
+    await query(insSql, vals);
     await ensureRolesTable();
     const setRole = role && (role === "admin" || role === "hr") ? role : "hr";
     if (roleCol) {
